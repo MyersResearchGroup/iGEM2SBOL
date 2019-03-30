@@ -29,6 +29,7 @@ import org.sbolstandard.core2.SBOLValidationException;
 import org.sbolstandard.core2.Sequence;
 import org.sbolstandard.core2.SequenceAnnotation;
 import org.sbolstandard.core2.SequenceOntology;
+import org.sbolstandard.core2.TopLevel;
 import org.synbiohub.frontend.SynBioHubException;
 import org.synbiohub.frontend.SynBioHubFrontend;
 
@@ -175,7 +176,7 @@ public class iGEM2SBOL
 			if (((String)feature.get("label")).equals((String)part.get("part_name"))) return;
 			JSONObject subpart = bioBricks.get((String)feature.get("label"));
 			if (subpart==null) {
-				System.out.println("could not find subpart " + (String)feature.get("label"));
+				//System.out.println("could not find subpart " + (String)feature.get("label"));
 				//return;
 			} else {
 				if (!((String)part.get("specified_u_list")).contains("_"+subpart.get("part_id")+"_")&&
@@ -211,9 +212,15 @@ public class iGEM2SBOL
 			start = end;
 			end = temp;
 		}
-		SequenceAnnotation sa = cd.createSequenceAnnotation("annotation"+featureId, "range", 
+		SequenceAnnotation sa = cd.createSequenceAnnotation("annotation"+featureId, "range"+featureId, 
 				start, end, OrientationType.INLINE);
 		sa.setName(labelOrType);
+		Range range = (Range)sa.getLocation("range"+featureId);
+		if (feature.get("reverse").toString().equals("1")) {
+			range.createAnnotation(new QName(igemTermNS,"direction","igem"), URI.create("http://wiki.synbiohub.org/wiki/Terms/igem#direction/reverse"));
+		} else {
+			range.createAnnotation(new QName(igemTermNS,"direction","igem"), URI.create("http://wiki.synbiohub.org/wiki/Terms/igem#direction/forward"));
+		}
 		if (comp!=null) {
 			sa.setComponent(comp.getIdentity());
 		} else {
@@ -412,19 +419,19 @@ public class iGEM2SBOL
 			if (!sibling.isSetComponent()) continue;
 			ComponentDefinition siblingDefinition = sibling.getComponent().getDefinition();
 			for (SequenceAnnotation childAnnotation : siblingDefinition.getSequenceAnnotations()) {
-				Range siblingRange = (Range)sibling.getLocation("range");
-				Range childRange = (Range)childAnnotation.getLocation("range");
+				Range siblingRange = (Range)sibling.getLocations().iterator().next();
+				Range childRange = (Range)childAnnotation.getLocations().iterator().next();
 				int startRelativeToParent = childRange.getStart() + siblingRange.getStart() - 1;
 				int endRelativeToParent = childRange.getEnd() + siblingRange.getStart() - 1;
 				if (sa.getRoles().size()>0 && childAnnotation.getRoles().size()>0) {
-					if (startRelativeToParent==((Range)sa.getLocation("range")).getStart() &&
-							endRelativeToParent==((Range)sa.getLocation("range")).getEnd() &&
+					if (startRelativeToParent==((Range)sa.getLocations().iterator().next()).getStart() &&
+							endRelativeToParent==((Range)sa.getLocations().iterator().next()).getEnd() &&
 							sa.getRoles().equals(childAnnotation.getRoles())) {
 								yes = true;
 					}
 				} else if (sa.isSetComponent() && childAnnotation.isSetComponent()) {
-					if (startRelativeToParent==((Range)sa.getLocation("range")).getStart() &&
-							endRelativeToParent==((Range)sa.getLocation("range")).getEnd() &&
+					if (startRelativeToParent==((Range)sa.getLocations().iterator().next()).getStart() &&
+							endRelativeToParent==((Range)sa.getLocations().iterator().next()).getEnd() &&
 							sa.getComponent().getDefinitionURI().equals(childAnnotation.getComponent().getDefinitionURI())) {
 								yes = true;
 					}
@@ -477,7 +484,7 @@ public class iGEM2SBOL
 			return;
 		}
 		int start = 0;
-		int end = 40000;
+		int end = 100000;
 		
 		try {
 			// Create an Activity
@@ -520,52 +527,75 @@ public class iGEM2SBOL
 		int size = parts.size();
 		int success = 0;
 		int failure = 0;
+		int blockSize = 1;
+		long time1, time2;
+		time1 = System.nanoTime();
 		for (Object p : parts) {
 			i++;
 			if (i < start) continue;
 			if (i > end) break;
-			document = new SBOLDocument(); 
-			document.setDefaultURIprefix("http://igem.org"); 
-			//document.setComplete(true); 
-			document.setCreateDefaults(true);
+			if (blockSize==1 || i % blockSize == 1) {
+				document = new SBOLDocument(); 
+				document.setDefaultURIprefix("http://igem.org"); 
+				//document.setComplete(true); 
+				document.setCreateDefaults(true);
+			}
 			JSONObject part = (JSONObject) p;
 			String displayId = (String)part.get("part_name");
 			try {
-				partToComponentDefinition(document,part,true,false);
-				pruneTransitiveAnnotations(document);
+				partToComponentDefinition(document,part,true,true);
 				//document.write(System.out);
-				SBOLValidate.validateSBOL(document,false,true,false);
-				if (SBOLValidate.getNumErrors()>0) {
-					failure++;
-					System.out.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure);
-					System.err.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure);
-					for (String error : SBOLValidate.getErrors()) {
-						System.err.println(error);
+				if (blockSize == 1 || i % blockSize == 0) {
+					pruneTransitiveAnnotations(document);
+					SBOLValidate.validateSBOL(document,false,true,false);
+					if (SBOLValidate.getNumErrors()>0) {
+						failure++;
+						System.out.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure);
+						System.err.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure);
+						for (String error : SBOLValidate.getErrors()) {
+							System.err.println(error);
+						}
+					} else {   
+						// Upload to SynBioHub
+						sbh.addToCollection(URI.create(uriPrefix+"/user/myers/igem/igem_collection/1"), true, document);
+						document = sbh.getSBOL(URI.create("https://synbiohub.org/user/myers/igem/"+displayId+"/1"));
+						for (TopLevel topLevel : document.getTopLevels()) {
+							topLevel.createAnnotation(new QName(sbhTermNS,"ownedBy","sbh"), URI.create("https://synbiohub.org/user/james"));
+						}
+						//SBOLDocument original = sbh.getSBOL(URI.create("https://synbiohub.org/public/igem/"+displayId+"/1"));
+						//document = document.changeURIPrefixVersion("https://synbiohub.org/public/igem/", null, "1");
+						//SBOLValidate.compareDocuments("original", original, "new", document);
+						//for (String error : SBOLValidate.getErrors()) {
+						//	System.out.println(error);
+						//}
+						//System.out.println("original");
+						//original.write(System.out);
+						//System.out.println("new");
+						//document.write(System.out);
+						success++;
+						time2 = System.nanoTime();
+						String time = createTimeString(time1, time2);
+						System.out.println(i + " out of " + size + ":"+displayId+" SUCCESS "+ success + " " + time);
 					}
-				} else {   
-					// Upload to SynBioHub
-					sbh.addToCollection(URI.create(uriPrefix+"/user/myers/igem/igem_collection/1"), true, document);
-					success++;
-		        	System.out.println(i + " out of " + size + ":"+displayId+" SUCCESS "+ success);
 				}
 			} catch (Exception e) {
-				try {
-					document = new SBOLDocument(); 
-					document.setDefaultURIprefix("http://igem.org"); 
-					//document.setComplete(true); 
-					document.setCreateDefaults(true);
-					partToComponentDefinition(document,part,true,true);
-					pruneTransitiveAnnotations(document);
-					sbh.addToCollection(URI.create(uriPrefix+"/user/myers/igem/igem_collection/1"), true, document);
-					success++;
-		        	System.out.println(i + " out of " + size + ":"+displayId+" SUCCESS "+ success + " (removed mutable description)");
-				}
-				catch (Exception e1) {
+//				try {
+//					document = new SBOLDocument(); 
+//					document.setDefaultURIprefix("http://igem.org"); 
+//					//document.setComplete(true); 
+//					document.setCreateDefaults(true);
+//					partToComponentDefinition(document,part,true,true);
+//					pruneTransitiveAnnotations(document);
+//					sbh.addToCollection(URI.create(uriPrefix+"/user/myers/igem/igem_collection/1"), true, document);
+//					success++;
+//		        	System.out.println(i + " out of " + size + ":"+displayId+" SUCCESS "+ success + " (removed mutable description)");
+//				}
+//				catch (Exception e1) {
 					failure++;
 		        	System.out.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure);
 		        	System.err.println(i + " out of " + size + ":"+displayId+" FAILURE "+ failure);
-		        	e1.printStackTrace(System.err);
-				}
+		        	e.printStackTrace(System.err);
+//				}
 			}
 		}
 		try {
@@ -580,4 +610,74 @@ public class iGEM2SBOL
 			e.printStackTrace();
 		}
     }
+	
+	public static String createTimeString(long time1, long time2)
+	{
+		long minutes;
+		long hours;
+		long days;
+		double secs = ((time2 - time1) / 1000000000.0);
+		long seconds = ((time2 - time1) / 1000000000);
+		secs = secs - seconds;
+		minutes = seconds / 60;
+		secs = seconds % 60 + secs;
+		hours = minutes / 60;
+		minutes = minutes % 60;
+		days = hours / 24;
+		hours = hours % 60;
+		String time;
+		String dayLabel;
+		String hourLabel;
+		String minuteLabel;
+		String secondLabel;
+		if (days == 1)
+		{
+			dayLabel = " day ";
+		}
+		else
+		{
+			dayLabel = " days ";
+		}
+		if (hours == 1)
+		{
+			hourLabel = " hour ";
+		}
+		else
+		{
+			hourLabel = " hours ";
+		}
+		if (minutes == 1)
+		{
+			minuteLabel = " minute ";
+		}
+		else
+		{
+			minuteLabel = " minutes ";
+		}
+		if (seconds == 1)
+		{
+			secondLabel = " second";
+		}
+		else
+		{
+			secondLabel = " seconds";
+		}
+		if (days != 0)
+		{
+			time = days + dayLabel + hours + hourLabel + minutes + minuteLabel + secs + secondLabel;
+		}
+		else if (hours != 0)
+		{
+			time = hours + hourLabel + minutes + minuteLabel + secs + secondLabel;
+		}
+		else if (minutes != 0)
+		{
+			time = minutes + minuteLabel + secs + secondLabel;
+		}
+		else
+		{
+			time = secs + secondLabel;
+		}
+		return time;
+	}
 }
